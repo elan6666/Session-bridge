@@ -1,0 +1,41 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdirSync,writeFileSync,readFileSync } from 'node:fs';
+import { resolve,join } from 'node:path';
+import { createByteWorkflow } from '../../src/workflows/byte.js';
+import { deliveryLab } from '../helpers/delivery-lab.js';
+import { RoleService } from '../../src/core/roles.js';
+import { sessionKey } from '../../src/protocol/canonical.js';
+const expectedSource={commit:'d194a20ad9725ea00208e04726f717a3364105d2',helper_sha256:'ed7b184db93749deadcd4cfdf75b646b7fc998f6a9970c6a60ef98a5fd0452f3'};
+async function setup(t:Parameters<typeof deliveryLab>[0]){const lab=await deliveryLab(t),dir=join(lab.root,'.byte-os/coordination');mkdirSync(join(dir,'handoffs'),{recursive:true});writeFileSync(join(dir,'state.json'),JSON.stringify({owner:'codex',owner_session:'codex:'+lab.actor.session.native_session_id,stage:'build',history:[],frozen_paths:[]}));const workflow=createByteWorkflow({root:lab.root,skillPath:resolve('tests/fixtures/byte'),expectedSource});const input={...lab.task.input,authority:{...lab.task.input.authority,workflow:'byte' as const}};return {...lab,dir,workflow,input,state:()=>JSON.parse(readFileSync(join(dir,'state.json'),'utf8'))};}
+test('handoff_without_delivery_recovers_same_id',async t=>{const f=await setup(t),first=await f.workflow.prepareByteHandoff(f.actor,f.input);assert.ok(first.handoff_id);assert.equal(f.state().owner_session,'codex:worker');const next=await f.workflow.prepareByteHandoff(f.actor,f.input);assert.deepEqual(first,next);assert.equal(f.state().history.length,1);assert.equal((await f.workflow.reconcileHandoff(first)).state,'granted');});
+test('old_owner_cannot_keep_writing',async t=>{const f=await setup(t),ref=await f.workflow.prepareByteHandoff(f.actor,f.input);assert.equal((await f.workflow.check(f.actor,ref,{...f.input,authority:ref})).state,'denied');await assert.rejects(()=>f.workflow.requireOwner(f.actor),/owner|authority/i);});
+test('nonowner_heartbeat_never_mutates_byte',async t=>{const f=await setup(t),before=readFileSync(join(f.dir,'state.json'),'utf8');const other={...f.actor,session:f.input.target};assert.equal((await f.workflow.check(other,f.input.authority,f.input)).state,'denied');await assert.rejects(()=>f.workflow.requireOwner(other));assert.equal(readFileSync(join(f.dir,'state.json'),'utf8'),before);});
+test('roles_do_not_transfer_baton',async t=>{const f=await setup(t),before=readFileSync(join(f.dir,'state.json'),'utf8');const roles=new RoleService(f.store,actor=>f.workflow.requireOwner(actor));await roles.assignRoles(f.actor,{main:f.actor.session,supervisor:f.input.target});assert.equal(readFileSync(join(f.dir,'state.json'),'utf8'),before);assert.equal(f.input.authority.owner_session_key,sessionKey(f.actor.session));});
+test('authorized_delegation_after_baton_transfer_is_recorded_once',async t=>{
+ const f=await setup(t);const {TaskService}=await import('../../src/core/tasks.js');const ref=await f.workflow.prepareByteHandoff(f.actor,f.input),tasks=new TaskService(f.store,f.workflow),input={...f.input,authority:ref};const a=await tasks.create(f.actor,input),b=await tasks.create(f.actor,input);assert.equal(a.task_id,b.task_id);assert.equal((await f.workflow.check(f.actor,ref,input)).state,'denied');
+});
+test('byte_transport_without_current_authority_provider_is_refused',async t=>{
+ const f=await setup(t),ref=await f.workflow.prepareByteHandoff(f.actor,f.input);f.store.db.prepare('UPDATE tasks SET input_json=?,input_sha256=? WHERE task_id=?').run(JSON.stringify({...f.input,authority:ref}),'fixture-byte-upgrade',f.task.task_id);const envelope={...f.envelope,handoff_id:ref.handoff_id,authority_epoch:ref.epoch};await assert.rejects(()=>f.service.send(f.actor,envelope),/Byte|authority|provider/i);assert.equal(f.adapter.enqueueCount,0);
+});
+test('real_byte_helper_returns_baton_to_exact_main',async t=>{
+ const f=await setup(t);await f.workflow.prepareByteHandoff(f.actor,f.input);const {BindingService}=await import('../../src/core/bindings.js');const {scopeDigest}=await import('../../src/workflows/standalone.js');const target=(await new BindingService(f.store).resolve({query:'worker'}))[0]!;const actor={...f.actor,binding_id:target.binding_id,session:target.identity};const scope={source:actor.session,target:f.actor.session,return_to:f.actor.session,goal:'回交已核验的样例结果',acceptance:['主会话独立验收'],read_paths:['output'],write_paths:[],deadline_at:'2099-01-01T00:00:00Z'};
+ const ref=await f.workflow.prepareByteHandoff(actor,{...scope,authority:{workflow:'byte',handoff_id:null,epoch:1,owner_session_key:sessionKey(actor.session),scope_digest:scopeDigest(scope)}},{toStage:'build'});
+ assert.equal(f.state().owner_session,'codex:'+f.actor.session.native_session_id);assert.equal(f.state().stage,'build');assert.equal(f.state().history.length,2);assert.equal(ref.epoch,2);assert.equal((await f.workflow.reconcileHandoff(ref)).state,'granted');
+});
+test('byte_request_retry_with_new_request_id_reuses_existing_task_and_message',async t=>{
+ const f=await setup(t);const {RequestService}=await import('../../src/cli/request.js');const {scopeDigest}=await import('../../src/workflows/standalone.js');
+ const service=new RequestService({store:f.store,registry:f.registry,workflow:f.workflow,prepareAuthority:(actor,scope)=>f.workflow.prepareByteHandoff(actor,{...scope,authority:{workflow:'byte',handoff_id:null,epoch:f.state().history.length,owner_session_key:sessionKey(actor.session),scope_digest:scopeDigest(scope)}})});
+ const request={request_id:'one',operation:'delegate' as const,target:{query:'worker'},goal:'同一可恢复 Byte 工作',acceptance:['真实完成'],read_paths:['.'],write_paths:['output'],deadline_at:'2099-01-01T00:00:00Z'};const first=await service.executeRequest(f.actor,request),second=await service.executeRequest(f.actor,{...request,request_id:'two'});assert.equal(first.state,'executed');assert.equal(second.state,'executed');const a=first as {result:{task:{task_id:string};delivery:{message_id:string}}},b=second as typeof a;assert.equal(a.result.task.task_id,b.result.task.task_id);assert.equal(a.result.delivery.message_id,b.result.delivery.message_id);assert.equal(f.state().history.length,1);assert.equal(f.adapter.enqueueCount,1);
+});
+
+
+test('request_recovers_exact_byte_handoff_after_pre_task_failure',async t=>{
+ const f=await setup(t);const {RequestService}=await import('../../src/cli/request.js');const {scopeDigest}=await import('../../src/workflows/standalone.js');let fail=true,dispatchFail=true;const workflow={...f.workflow,reconcileHandoff:async(ref:Parameters<typeof f.workflow.reconcileHandoff>[0])=>{if(dispatchFail){dispatchFail=false;throw new Error('failure before native intent');}return f.workflow.reconcileHandoff(ref);}};
+ const service=new RequestService({store:f.store,registry:f.registry,workflow,prepareAuthority:async(actor,scope)=>{const ref=await f.workflow.prepareByteHandoff(actor,{...scope,authority:{workflow:'byte',handoff_id:null,epoch:f.state().history.length,owner_session_key:sessionKey(actor.session),scope_digest:scopeDigest(scope)}});if(fail){fail=false;throw new Error('simulated failure after durable Byte handoff');}return ref;}});
+ const request={request_id:'handoff-crash',operation:'delegate' as const,target:{query:'worker'},goal:'recover captured exact scope',acceptance:['one task and message'],read_paths:['.'],write_paths:['output'],deadline_at:'2099-01-01T00:00:00Z'};
+ const before=Number(f.store.db.prepare('SELECT count(*) n FROM tasks').get()!.n);await assert.rejects(()=>service.executeRequest(f.actor,request));assert.equal(f.state().history.length,1);
+ await assert.rejects(()=>service.executeRequest(f.actor,request));const reserved=f.store.db.prepare('SELECT task_id,message_id FROM requests WHERE request_id=?').get(request.request_id)!;assert.equal(f.adapter.enqueueCount,0);
+ const result=await service.executeRequest(f.actor,request);assert.equal(result.state,'executed');assert.equal(f.state().history.length,1);assert.equal(f.adapter.enqueueCount,1);assert.equal(f.store.db.prepare('SELECT count(*) n FROM tasks').get()!.n,before+1);
+ assert.equal(f.store.db.prepare('SELECT task_id,message_id FROM requests WHERE request_id=?').get(request.request_id)!.task_id,reserved.task_id);await service.executeRequest(f.actor,request);assert.equal(f.adapter.enqueueCount,1);
+});

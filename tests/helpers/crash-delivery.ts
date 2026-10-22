@@ -1,0 +1,12 @@
+import { openStore } from '../../src/core/database.js';
+import { DeliveryService } from '../../src/core/delivery.js';
+import { AdapterRegistry } from '../../src/adapters/registry.js';
+import { FakeAdapter } from '../../src/adapters/fake.js';
+import type { Actor,Envelope } from '../../src/protocol/types.js';
+let text='';for await(const chunk of process.stdin)text+=chunk;
+const input=JSON.parse(text) as {root:string;nativePath:string;phase:string;actor:Actor;envelope:Envelope};
+const store=openStore(input.root),adapter=new FakeAdapter(input.nativePath),deliver=adapter.deliver.bind(adapter);
+adapter.deliver=async envelope=>{if(input.phase==='before_native')process.exit(76);const result=await deliver(envelope);if(input.phase==='after_native')process.exit(77);return result;};
+const registry=new AdapterRegistry();registry.register('codex',adapter);
+await new DeliveryService(store,registry).send(input.actor,input.envelope);
+await adapter.disconnect('');store.close();

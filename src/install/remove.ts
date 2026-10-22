@@ -1,0 +1,13 @@
+import { existsSync,readFileSync,unlinkSync } from 'node:fs';
+import { join,relative } from 'node:path';
+import type { InstallReceipt } from './apply.js';
+import { privateWrite } from './apply.js';
+import { activeInstallOwners,SKILLS,HARNESSES,bytesHash,entryAt,installLocations,readJsonConfig,safeInstallPath } from './plan.js';
+import { digest } from '../protocol/canonical.js';
+export interface RemovalResult {removed:string[];preserved:string[]}
+export async function removeInstall(receipt:InstallReceipt):Promise<RemovalResult>{
+ const result:RemovalResult={removed:[],preserved:[]};if(!HARNESSES.includes(receipt.plan.harness as typeof HARNESSES[number]))throw new Error('Unknown installation receipt');const root=receipt.plan.targetRoot,marker=join(root,'.session-bridge-install',receipt.plan.harness+'-'+receipt.plan.scope+'.json');if(existsSync(marker) && JSON.parse(readFileSync(marker,'utf8')).receipt_file!==receipt.receipt_file)return {removed:[],preserved:['stale_install_receipt:'+receipt.receipt_file]};const locations=installLocations(root,receipt.plan.harness,receipt.plan.scope),prefixes=[locations.plugin,...SKILLS.map(name=>join(locations.skills,name))];
+ for(const file of receipt.owned_files){if(!prefixes.some(prefix=>file.path.startsWith(prefix+'/')) || !safeInstallPath(root,file.path)){result.preserved.push(file.path);continue;}if(!existsSync(file.path))continue;if(bytesHash(readFileSync(file.path))!==file.sha256){result.preserved.push(file.path);continue;}if(activeInstallOwners(root).some(owner=>owner.id!==receipt.id && owner.owned_files.some(f=>f.path===file.path && f.sha256===file.sha256))){result.preserved.push(file.path);continue;}unlinkSync(file.path);result.removed.push(file.path);}
+ const config=receipt.plan.config;if(receipt.config_owned && config){if(config.path!==join(root,'.mcp.json') || !safeInstallPath(root,config.path)){result.preserved.push(config.path);return result;}const value=readJsonConfig(config.path),current=entryAt(value,config.key);if(digest(current??null)!==digest(config.value)){result.preserved.push(config.path+':'+config.key+'.sessionbridge');return result;}const entries=value[config.key] as Record<string,unknown>;delete entries.sessionbridge;if(!Object.keys(entries).length)delete value[config.key];if(Object.keys(value).length)privateWrite(config.path,JSON.stringify(value,null,2)+'\n');else unlinkSync(config.path);result.removed.push(config.path+':'+config.key+'.sessionbridge');}
+ const own=relative(join(root,'.session-bridge-install'),receipt.receipt_file);if(own && !own.startsWith('..'))privateWrite(receipt.receipt_file,JSON.stringify({...receipt,state:'removed',removal:result},null,2)+'\n');return result;
+}

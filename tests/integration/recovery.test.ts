@@ -1,0 +1,9 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { deliveryLab } from '../helpers/delivery-lab.js';
+async function crash(input:unknown):Promise<number|null>{return new Promise((resolve,reject)=>{const child=spawn(process.execPath,['dist/tests/helpers/crash-delivery.js'],{stdio:['pipe','pipe','pipe']});const timer=setTimeout(()=>{child.kill('SIGTERM');reject(new Error('Owned crash test timed out'));},5000);child.on('error',reject);child.on('exit',code=>{clearTimeout(timer);resolve(code)});child.stdin.end(JSON.stringify(input));});}
+test('crash_after_native_commit_recovers',async t=>{const lab=await deliveryLab(t);assert.equal(await crash({...lab,phase:'after_native',store:undefined,adapter:undefined,registry:undefined,service:undefined,tasks:undefined}),77);assert.equal(lab.adapter.enqueueCount,1);const record=await lab.service.recover(lab.actor,lab.envelope.message_id);assert.equal(record.state,'receiver_accepted');await lab.service.send(lab.actor,lab.envelope);assert.equal(lab.adapter.enqueueCount,1);});
+test('crash_after_intent_never_blind_resends',async t=>{const lab=await deliveryLab(t);assert.equal(await crash({...lab,phase:'before_native',store:undefined,adapter:undefined,registry:undefined,service:undefined,tasks:undefined}),76);assert.equal((await lab.service.recover(lab.actor,lab.envelope.message_id)).state,'uncertain');await lab.service.send(lab.actor,lab.envelope);assert.equal(lab.adapter.enqueueCount,0);});
+
+test('independent_dispatchers_share_one_durable_intent',async t=>{const lab=await deliveryLab(t);const input={root:lab.root,nativePath:lab.nativePath,phase:'normal',actor:lab.actor,envelope:lab.envelope};assert.deepEqual(await Promise.all([crash(input),crash(input)]),[0,0]);assert.equal(lab.adapter.enqueueCount,1);});

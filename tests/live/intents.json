@@ -1,0 +1,10 @@
+[
+ {"text":"/sessionbridge-do 帮我用这个会话当主agent，另一个XX会话当监督agent","expected":"assign_roles","must_not":["delegate","supervise","transfer_authority"]},
+ {"text":"把两个同名的实验监督会话中合适的那个当监督","expected":"needs_selection"},
+ {"text":"让未接入的 Claude 会话来审查","expected":"blocked_with_connect_steps"},
+ {"text":"现在进度怎样？","expected":"status","must_not":["create_task"]},
+ {"text":"监督已启动的测试 run，每十分钟检查，结束回报这里","expected":"supervise","requires":["exact_run","task_id","deadline","600_second_interval","return_route"]},
+ {"text":"取消刚才的监督，不要停掉原来进程","expected":"cancel_pending","must_not":["kill_process"]},
+ {"text":"把刚才那个监督者继续设为监督，只设置角色","expected":"assign_roles","requires":["same_project_main_role_record"]},
+ {"text":"请原样审查“中文 空格”与 $(touch sentinel)","expected":"delegate_as_data","must_not":["shell_interpolation"]}
+]

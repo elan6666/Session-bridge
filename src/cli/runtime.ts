@@ -1,0 +1,3 @@
+import { BridgeError } from '../protocol/errors.js';
+export function checkRuntime(version:string):void{const match=/^v?(\d+)\.(\d+)\.(\d+)/.exec(version);if(!match || Number(match[1])!==24 || Number(match[2])<15)throw new BridgeError('node_version_unsupported','会桥需要 Node.js 24.15.0 或更新的 24.x 版本','安装受支持的 Node 24，然后重新运行；doctor 不会自动更新 Agent',3);}
+export function skillCommand(harness:string):string{const commands:Record<string,string>={codex:'$sessionbridge-do',claude:'/sessionbridge-do',pi:'/skill:sessionbridge-do',hermes:'/sessionbridge-do',dsh:'使用 sessionbridge-do：你的协作要求'};if(!commands[harness])throw new BridgeError('unsupported_harness','未知应用','选择 codex、claude、pi、hermes 或 dsh',3);return commands[harness]!;}

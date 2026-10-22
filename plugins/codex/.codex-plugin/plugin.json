@@ -1,0 +1,1 @@
+{"name":"sessionbridge","version":"0.1.0","description":"现有 Agent 会话之间的任务交接、监督与可验证回报。","skills":"./skills/","interface":{"displayName":"会桥 SessionBridge","shortDescription":"在原会话中协作，完成后带证据回报"}}

@@ -1,0 +1,10 @@
+name: sessionbridge
+version: '0.1.0'
+description: Connect the current native Hermes session to SessionBridge; native injection permission remains authoritative.
+provides_hooks:
+  - pre_llm_call
+  - on_session_reset
+  - on_session_end
+  - on_session_finalize
+provides_tools:
+  - sessionbridge_request

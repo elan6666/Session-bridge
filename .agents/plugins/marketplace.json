@@ -1,0 +1,1 @@
+{"name":"sessionbridge-local","plugins":[{"name":"sessionbridge","source":"./plugins/codex","description":"会桥：原会话任务交接、监督与可验证回报"}]}
